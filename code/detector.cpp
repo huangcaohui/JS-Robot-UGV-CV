@@ -45,7 +45,7 @@ Mat Detector::preprocess(Mat srcImage)
     Mat kernel = getStructuringElement(MORPH_RECT, Size(10, 10));
     morphologyEx(threshImg, threshImg, MORPH_CLOSE, kernel);
 
-    imshow("threshImg", threshImg);
+    //imshow("threshImg", threshImg);
 
     return threshImg;
 }
@@ -62,7 +62,7 @@ Mat Detector::gainRedImg(Mat srcImage)
     bitwise_or(redImage_a, redImage_b, redImage);
     medianBlur(redImage, redImage, 9);
 
-    imshow("red", redImage);
+    //imshow("red", redImage);
 
     return redImage;
 }
@@ -197,7 +197,10 @@ int Detector::distinguishType(Mat threshImg, Mat redImage, Mat srcImage)
             longEdge = max(rotatedRect.size.height, rotatedRect.size.width);
             shortEdge = min(rotatedRect.size.height, rotatedRect.size.width);
 
-            //int type = distinguishTower(contours[i], threshImg.size(), cloneImage);
+            int type = distinguishTower(contours[i], threshImg.size(), cloneImage);
+			
+			if(type == 1 && contourArea(contours[i]) > 80)
+				centres_tower.push_back(gainMidpoint(rotatedRect));
 
             //判断停车线
             if(judgeCross(rotatedRect, threshImg.size()) == true)
@@ -210,19 +213,12 @@ int Detector::distinguishType(Mat threshImg, Mat redImage, Mat srcImage)
         }       
     }
 
-    for(int i = 0; i < red_contours.size(); i++)
-    {
-        int area = contourArea(red_contours[i]);
-        if(area > 120)
-            centres_tower.push_back(gainMidpoint(rotatedRect));
-    }
-
     //锥形标判别
     if(centres_tower.size() > 1)
     {
         fitLine(centres_tower, line, CV_DIST_HUBER, 0, 0.01, 0.01);
         if(line[1] < 0.6*line[0])
-            towerBeacon = true;
+			towerBeacon = true;
     }
 
     //人行道判别
@@ -240,7 +236,7 @@ int Detector::distinguishType(Mat threshImg, Mat redImage, Mat srcImage)
     else if(towerBeacon == true)
         drawContours(cloneImage, red_contours, -1, Scalar(255, 0, 0), 2);
 
-    imshow("cloneImage", cloneImage);
+    //imshow("cloneImage", cloneImage);
 
     if(speedBump == true)
         return 2;
@@ -307,111 +303,25 @@ bool Detector::judgeCross(RotatedRect rotatedRect, Size imageSize)
 
 int Detector::distinguishTower(vector<Point> contour, Size imageSize, Mat &srcImage)
 {
-    vector<int> point[imageSize.height];
-    int top = imageSize.height, bottom = 0;
-
-    //存储每个轮廓的行对应的点
-    for(int i = 0; i < contour.size(); i++)
+	Point point;
+	unsigned int redAvg = 0, blueAvg = 0;
+	
+    for(unsigned int b = 0; b < contour.size(); ++b)
     {
-        if(contour[i].y >= 0 && contour[i].y < imageSize.height)
-            point[contour[i].y].push_back(contour[i].x);
-        if(contour[i].y < top)
-            top = contour[i].y;
-        if(contour[i].y > bottom)
-            bottom = contour[i].y;
+        point = contour[b];
+        redAvg += *(srcImage.ptr<uchar>(point.y) + point.x*srcImage.channels() + 2);
+        blueAvg += *(srcImage.ptr<uchar>(point.y) + point.x*srcImage.channels());
     }
 
-    //用于存储轮廓每行在y轴上投影长度及左右两边的点
-    int distance[bottom - top + 1];
-    Point left[bottom - top + 1], right[bottom - top + 1];
-    vector<int> *p = &point[top];
-
-    //数组初始化为1
-    for(int i = 0; i < bottom - top + 1; i++)
-        distance[i] = 1;
-
-    //寻找轮廓在y轴上的投影长度
-    for(int i = 0; i < bottom - top + 1; i++)
+    redAvg /= contour.size();
+    blueAvg /= contour.size();
+	
+	if(redAvg > blueAvg + 30)
     {
-        if(p->size() > 1)
-        {
-            int leftPoint = *p->begin(), rightPoint = *p->begin();
-            for(vector<int>::iterator j = p->begin(); j != p->end(); j++)
-            {
-                for(vector<int>::iterator k = p->begin(); k != p->end(); k++)
-                {
-                    if(abs(*j - *k) > distance[i])
-                    {
-                        distance[i] = abs(*j - *k);
-                    }
-                }
-
-                //获取同一列最边上两点
-                if(*j < leftPoint)
-                    leftPoint = *j;
-                if(*j > rightPoint)
-                    rightPoint = *j;
-            }
-
-            left[i] = Point(leftPoint, i + top);
-            right[i] = Point(rightPoint, i + top);
-        }
-        p++;
-    }
-
-    //获取投影最长边
-    int *q = &distance[0];
-    int longEdge = 0, rows = 0;
-
-    for(int i = 0; i < bottom - top + 1; i++)
-    {
-        if(*q > longEdge)
-        {
-            longEdge = *q;
-            rows = i;
-        }
-        q++;
-    }
-
-    //获取轮廓最长投影上方的边缘
-    vector<Point> leftEdge, rightEdge;
-    Point *m = &left[0], *n = &right[0];
-
-    if(rows > 0)
-    {
-        for(int i = 0; i < rows; i++)
-        {
-            leftEdge.push_back(*m++);
-            rightEdge.push_back(*n++);
-        }
-    }
-
-    //获取两边夹角
-    Vec4f line_l, line_r;
-    if(!leftEdge.empty() && !rightEdge.empty())
-    {
-        fitLine(leftEdge, line_l, CV_DIST_HUBER, 0, 0.01, 0.01);
-        fitLine(rightEdge, line_r, CV_DIST_HUBER, 0, 0.01, 0.01);
-    }
-
-    Point l(40*line_l[0]+line_l[2], 40*line_l[1]+line_l[3]);
-    Point r(40*line_r[0]+line_r[2], 40*line_r[1]+line_r[3]);
-    line(srcImage, l, Point(line_l[2], line_l[3]), Scalar(255, 255, 0), 2);
-    line(srcImage, r, Point(line_r[2], line_r[3]), Scalar(0, 255, 255), 2);
-
-    double thet, module_l, module_r;
-    module_l = sqrt(pow(line_l[0], 2) + pow(line_l[1], 2));
-    module_r = sqrt(pow(line_r[0], 2) + pow(line_r[1], 2));
-    thet = acos((line_l[0]*line_r[0] + line_l[1]*line_r[1])/(module_l*module_r));
-    thet = min(thet, CV_PI - thet)*180/CV_PI;
-
-    //cout << "thet:" << thet << endl;
-
-    if(thet > 10 && thet < 40)
         return 1;
-    if(thet < 10)
-        return 2;
-    return 0;
+    }
+	
+	return 0;
 }
 
 Point Detector::gainMidpoint(RotatedRect rotatedRect)
